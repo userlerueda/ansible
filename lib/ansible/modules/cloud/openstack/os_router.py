@@ -159,6 +159,15 @@ EXAMPLES = '''
     cloud: mycloud
     state: absent
     name: router1
+
+# Update msx-router
+- os_router:
+    cloud: mycloud
+    state: present
+    name: msx-router
+    routes:
+      - destination: 10.254.2.0/24
+        nexthop: 10.32.1.200
 '''
 
 RETURN = '''
@@ -280,6 +289,10 @@ def _needs_update(cloud, module, router, network, internal_subnet_ids, internal_
             internal_subnet_ids = []
             return True
 
+    # check routes
+    if router['routes'] != module.params['routes']:
+        return True
+
     return False
 
 
@@ -319,6 +332,13 @@ def _build_kwargs(cloud, module, router, network):
             if 'ip' in iface:
                 d['ip_address'] = iface['ip']
             kwargs['ext_fixed_ips'].append(d)
+
+    if module.params['routes']:
+        kwargs['routes'] = []
+        for route in module.params['routes']:
+            r = {'destination': route['destination'],
+                 'nexthop': route['nexthop']}
+            kwargs['routes'].append(r)
 
     return kwargs
 
@@ -377,7 +397,8 @@ def main():
         network=dict(default=None),
         interfaces=dict(type='list', default=None),
         external_fixed_ips=dict(type='list', default=None),
-        project=dict(default=None)
+        project=dict(default=None),
+        routes=dict(type='list', default=None),
     )
 
     module_kwargs = openstack_module_kwargs()
@@ -427,6 +448,8 @@ def main():
                 kwargs = _build_kwargs(cloud, module, router, net)
                 if project_id:
                     kwargs['project_id'] = project_id
+                # remove routes on create_router()
+                kwargs.pop('routes', None)
                 router = cloud.create_router(**kwargs)
                 for int_s_id in subnet_internal_ids:
                     cloud.add_router_interface(router, subnet_id=int_s_id)
@@ -462,6 +485,10 @@ def main():
                             cloud.add_router_interface(router, subnet_id=s_id)
                         changed = True
 
+                    # check if routes has changed
+                    if router['routes'] != updated_router['routes']:
+                        changed = True
+
             module.exit_json(changed=changed,
                              router=router,
                              id=router['id'])
@@ -476,6 +503,11 @@ def main():
                 router_id = router['id']
                 for port in ports:
                     cloud.remove_router_interface(router, port_id=port['id'])
+
+                # We need to delete all routes on the router before we are
+                # allowed to delete it.
+                cloud.update_router(router_id, routes=[])
+
                 cloud.delete_router(router_id)
                 module.exit_json(changed=True)
 
